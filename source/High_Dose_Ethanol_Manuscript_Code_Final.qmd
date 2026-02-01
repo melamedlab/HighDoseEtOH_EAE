@@ -1,0 +1,1138 @@
+---
+title: "High_Dose_Ethanol_Manuscript"
+format: html
+editor: visual
+---
+
+## High Dose Alcohol Manuscript
+
+This code is for the manuscript titled "High-dose Ethanol-induced Immunosuppression Modulates Sex-Specific Disease Outcomes in a Murine Model of Multiple Sclerosis". The code is maintained on the Melamed Lab github at the following link:
+https://github.com/melamedlab/HighDoseEtOH_EAE
+
+## Data Load
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(readxl)
+library(emmeans)
+library(ggbeeswarm)
+library(writexl)
+library(Hmisc)
+library(sciplot)
+library(rstatix)
+library(stringr)
+library(phyloseq)
+library(vegan)
+library(patchwork)
+#library(ANCOMBC)
+#library(curatedMetagenomicData)
+
+theme_set(theme_classic(base_size = 13))
+
+standard_error <- function(x) sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+
+colors_treatment <- c("control" = "#415CAA", "etoh" = "#F26522",
+                      "Ctl" = "#415CAA", "EtOH" = "#F26522")
+colors_sex <- c("male" = "#F26522", "female" = "#F6B284")
+shapes_sex <- c("male" = 16, "female" = 17)
+output <- "../output/"
+```
+
+## Figure 2: Blood Ethanol Concentration (BEC) and Liver Histology
+### Figure 2A: BEC Graph
+```{r, fig.width = 3, fig.height = 3}
+
+bec <- read_csv("../data/BEC_data.csv") %>%
+  mutate(
+    BEC_plot = ifelse(BEC < 0, 0, BEC),
+    treatment = factor(treatment, levels = c("control", "etoh")),
+    sex = factor(sex, levels = c("male", "female"))
+  )
+
+p_bec_treatment <- ggplot(bec, aes(treatment, BEC_plot)) +
+  geom_boxplot(aes(color = treatment), outlier.shape = NA, fill = NA, width = 0.6) +
+  geom_jitter(aes(color = treatment, shape = sex),
+              width = 0.15, size = 2, alpha = 0.7) +
+  scale_color_manual(values = colors_treatment) +
+  scale_shape_manual(values = shapes_sex) +
+  labs(x = "Treatment", y = "BEC (mg/dL)") +
+  stat_compare_means(method = "wilcox.test", label = "p.signif")
+p_bec_treatment
+ggsave(paste0(output, "Figure2A.pdf"), p_bec_treatment, width = 3, height = 3)
+```
+### Figure 2B and 2C: Rep Images
+Figure 2B and 2C are representative images and have no corresponding code.
+
+### Figure 2D: Oil O Red
+```{r, fig.width = 3, fig.height = 3}
+
+oro <- read_excel("../data/Oil_Red_O_data.xlsx") %>%
+  mutate(
+    Treatment = factor(Treatment, levels = c("Ctl", "EtOH")),
+    Sex = factor(Sex, levels = c("male", "female"))
+  )
+
+p_oro_treatment <- ggplot(oro, aes(Treatment, ORO_value)) +
+  geom_boxplot(aes(color = Treatment), outlier.shape = NA,
+               fill = NA, width = 0.6) +
+  geom_jitter(aes(color = Treatment, shape = Sex),
+              width = 0.15, size = 2) +
+  scale_color_manual(values = colors_treatment) +
+  scale_shape_manual(values = shapes_sex) +
+  labs(x = "Treatment", y = "Oil Red O lipid area") +
+  stat_compare_means(method = "wilcox.test", label = "p.signif")
+p_oro_treatment
+ggsave("../output/Figure2D.pdf", width = 3, height = 3)
+
+oro_summary <- oro %>%
+  group_by(Treatment) %>%
+  summarise(
+    mean = mean(ORO_value),
+    median = median(ORO_value),
+    sd = sd(ORO_value),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    fold_change_vs_Ctl = ifelse(
+      Treatment == "EtOH",
+      mean / mean[Treatment == "Ctl"],
+      NA
+    )
+  )
+
+write_csv(oro_summary, "../output/Figure2D_summary_statistics.csv")
+
+```
+
+## Figure 3: EAE Score Curves
+### Figure 3A-E: EAE Score Curves
+```{r}
+group_colors <- c(
+  "Ctl-Female"  = "#9BB9E1",
+  "Ctl-Male"    = "#415CAA",
+  
+  "EtOH-Female" = "#F6B284",
+  "EtOH-Male"   = "#F26522",
+  
+  "Ctl"         = "#7A7A7A",  
+  "EtOH"        = "#000000"
+)
+
+standard_error <- function(x) {
+  sd(x, na.rm = TRUE) / sqrt(length(na.omit(x)))
+}
+
+t_test_p_value <- function(col_A, col_B) {
+  t.test(col_A, col_B)$p.value
+}
+
+eae_data <- read_csv("../data/EAE_data.csv")
+
+eae_data <- eae_data %>%
+  mutate(pattern = paste(Treatment, Sex, sep = "-"))
+
+comparison.plot <- function(pattern1, pattern2, figure_name) {
+  
+  stopifnot(pattern1 %in% names(group_colors),
+            pattern2 %in% names(group_colors))
+  
+  col1 <- group_colors[pattern1]
+  col2 <- group_colors[pattern2]
+  
+  gr1 <- eae_data %>%
+    filter(str_detect(pattern, pattern1)) %>%
+    select(`7`:`19`)
+  
+  gr2 <- eae_data %>%
+    filter(str_detect(pattern, pattern2)) %>%
+    select(`7`:`19`)
+  
+  gr1.means <- summarise(gr1, across(everything(), mean, na.rm = TRUE)) %>% unlist()
+  gr1.stdev <- summarise(gr1, across(everything(), standard_error)) %>% unlist()
+  
+  gr2.means <- summarise(gr2, across(everything(), mean, na.rm = TRUE)) %>% unlist()
+  gr2.stdev <- summarise(gr2, across(everything(), standard_error)) %>% unlist()
+  
+  sigs <- mapply(t_test_p_value, gr1, gr2)
+  days <- as.numeric(colnames(gr1))
+  
+  pdf(paste(output, figure_name, ".pdf"),
+      width = 6, height = 4)
+  
+  plot(days, gr1.means, type = "o",
+       col = col1, frame.plot = FALSE, axes = FALSE,
+       xlim = c(7, 19), ylim = c(0, 4),
+       xlab = "Day", ylab = "Score")
+  
+  axis(2, at = 0:4)
+  axis(1, at = 7:19)
+  
+  lines(days, gr2.means, type = "o", col = col2)
+  
+  errbar(days, gr1.means,
+         gr1.means + gr1.stdev,
+         gr1.means - gr1.stdev,
+         add = TRUE, errbar.col = col1, col = col1)
+  
+  errbar(days, gr2.means,
+         gr2.means + gr2.stdev,
+         gr2.means + (-gr2.stdev),
+         add = TRUE, errbar.col = col2, col = col2)
+  
+  sel <- (0.01 < sigs & sigs < 0.05)
+  text(days[sel], pmax(gr1.means[sel], gr2.means[sel]) + 0.45, "*", cex = 1.5)
+  
+  sel <- (0.001 < sigs & sigs < 0.01)
+  text(days[sel], pmax(gr1.means[sel], gr2.means[sel]) + 0.45, "**", cex = 1.5)
+  
+  sel <- sigs < 0.001
+  text(days[sel], pmax(gr1.means[sel], gr2.means[sel]) + 0.45, "***", cex = 1.5)
+  
+  legend("topleft",
+         legend = c(pattern1, pattern2),
+         col = c(col1, col2),
+         lty = 1,
+         pch = 16,
+         bty = "n")
+  
+  dev.off()
+}
+
+comparison.plot("EtOH", "Ctl", "Figure3A")
+comparison.plot("EtOH-Male", "Ctl-Male", "Figure3B")
+comparison.plot("EtOH-Female", "Ctl-Female", "Figure3C")
+comparison.plot("Ctl-Male", "Ctl-Female", "Figure3D")
+comparison.plot("EtOH-Male", "EtOH-Female", "Figure3E")
+```
+
+### Figure 3F: Days >= EAE Score of 2
+```{r, fig.width = 4, fig.height = 3}
+
+eae_data <- read_csv("../data/EAE_data.csv") %>%
+  mutate(
+    Treatment = factor(Treatment, levels = c("Ctl", "EtOH")),
+    Sex = factor(Sex, levels = c("Female", "Male"))
+  )
+
+peak_days <- as.character(11:17)
+
+eae_data <- eae_data %>%
+  rowwise() %>%
+  mutate(high_EAE_days = sum(c_across(all_of(peak_days)) >= 2, na.rm = TRUE)) %>%
+  ungroup()
+
+poisson_model <- glm(high_EAE_days ~ Treatment * Sex,
+                     family = poisson, data = eae_data)
+
+emm <- emmeans(poisson_model, ~ Treatment | Sex, type = "response")
+
+contrast_df <- contrast(emm, "revpairwise", adjust = "fdr") %>%
+  as.data.frame() %>%
+  mutate(
+    fold_change = round(ratio, 2),
+    percent_change = round((1 - fold_change) * 100),
+    signif = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      TRUE ~ "ns"
+    )
+  )
+
+write_xlsx(contrast_df, "../output/Figure3F_stats.xlsx")
+
+p_eae <- ggplot(eae_data,
+                aes(Treatment, high_EAE_days, color = Treatment)) +
+  geom_boxplot(width = 0.55, outlier.shape = NA, alpha = 0.25) +
+  geom_quasirandom(width = 0.15, size = 2, alpha = 0.7) +
+  scale_color_manual(values = colors_treatment) +
+  facet_wrap(~ Sex) +
+  labs(
+    x = "Treatment",
+    y = expression("Number of days with EAE score " >= 2)
+  ) +
+  theme(legend.position = "none")
+p_eae
+ggsave("../output/Figure3F.pdf", p_eae, width = 4, height = 3)
+
+```
+
+
+## Figure 4: Microbiome
+### Microbiome Data Load
+```{r}
+group_colors <- c(
+  "EtOH Male"   = "#F26522",
+  "EtOH Female" = "#F6B284",
+  "Ctl Male"    = "#415CAA",
+  "Ctl Female"  = "#9BB9E1"
+)
+
+group_levels <- c("EtOH Male", "EtOH Female", "Ctl Male", "Ctl Female")
+
+metadata <- read_xlsx("../data/MBX6_metadata.xlsx") %>%
+  mutate(
+    sample_id = gsub("-", "_", sample_id),
+    sex = factor(sex),
+    GroupSex = factor(paste(group, sex), levels = group_levels),
+    timepoint = factor(adriana_timepoint,
+                       levels = c("pre-EAE (D0)", "Day 26 (D26)"),
+                       labels = c("D0", "D26"))
+  )
+setwd("../data/microbiome_data/")
+profile_files <- list.files(pattern = "_taxonomic_profile\\.tsv$", full.names = TRUE)
+
+read_profile <- function(file) {
+  read_tsv(file, comment = "#",
+           col_names = c("clade", "tax_id", "abundance", "extra"),
+           col_types = cols(.default = "c")) %>%
+    mutate(
+      abundance = as.numeric(abundance),
+      sample_id = basename(file) %>%
+        str_remove("_taxonomic_profile\\.tsv") %>%
+        str_replace("pre-EAE", "-D0") %>%
+        str_replace("post-EAE", "-D26")
+    ) %>%
+    filter(!is.na(abundance)) %>%
+    select(taxon = clade, abundance, sample_id)
+}
+
+abundance_long <- map_dfr(profile_files, read_profile)
+```
+### Figure 4A: Shannon Diversity
+```{r, fig.width = 5, fig.height = 4}
+group_colors <- c(
+  "Ctl Female"  = "#9BB9E1",
+  "Ctl Male"    = "#415CAA",
+  "EtOH Female" = "#F6B284",
+  "EtOH Male"   = "#F26522"
+)
+shannon_df_treatment <- read_csv("../data/shannon_abundance.csv") %>%
+  filter(Metric == "Shannon") %>%
+   left_join(metadata %>% mutate(sample_id = gsub("_", "-", sample_id)),
+             by = c("SampleID" = "sample_id"))
+
+shannon_df_treatment <- shannon_df_treatment %>%
+  mutate(
+    Group = factor(Group, levels = c("Ctl Female", "Ctl Male", "EtOH Female", "EtOH Male")),
+    timepoint = factor(timepoint)
+  )
+
+pairwise_stats <- shannon_df_treatment %>%
+  group_by(timepoint) %>%
+  wilcox_test(Value ~ Group, p.adjust.method = "BH") %>%
+  add_significance("p.adj") %>%
+  filter(p.adj < 0.05) %>%                       # keep only significant comparisons
+  add_xy_position(x = "Group", fun = "max")   # automatic y positions
+
+
+ p <- ggplot(shannon_df_treatment, aes(x = Group, y = Value, color = Group)) +
+    geom_boxplot(width = 0.6, fill = NA, outlier.shape = NA) +  # transparent boxes
+    geom_jitter(width = 0.15, size = 2, alpha = 0.7) +                    # colored dots
+    facet_wrap(~timepoint) +
+    scale_color_manual(values = group_colors) +
+    stat_pvalue_manual(
+      pairwise_stats,
+      label = "p.adj.signif",
+      tip.length = 0.02) +
+    theme_classic(base_size = 12) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none") +
+    labs(x = "Treatment × Sex", y = "Shannon Diversity")
+p
+ggsave("../output/Figure4A.pdf", width = 4, height = 5)
+
+```
+
+### Figure 4B: Bray-Curtis PCoA
+```{r, fig.width = 8, fig.height = 4}
+otu_mat <- abundance_long %>%
+  pivot_wider(names_from = sample_id, values_from = abundance, values_fill = 0) %>%
+  column_to_rownames("taxon") %>%
+  as.matrix() %>%
+  {.[rowSums(.) > 0, colSums(.) > 0]} # remove empty rows/columns
+
+ps <- phyloseq(
+  otu_table(otu_mat, taxa_are_rows = TRUE),
+  sample_data(metadata %>% mutate(sample_id = gsub("_", "-", sample_id)) %>%
+                filter(sample_id %in% colnames(otu_mat)) %>%
+                column_to_rownames("sample_id"))
+)
+
+ps_D0  <- prune_samples(ps@sam_data[["timepoint"]] == "D0", ps)
+ps_D26 <- prune_samples(ps@sam_data[["timepoint"]] == "D26", ps)
+
+ord_D0  <- ordinate(ps_D0,  "PCoA", "bray")
+ord_D26 <- ordinate(ps_D26, "PCoA", "bray")
+
+axis_labels <- function(ord) {
+  paste0("PC", 1:2, " (", round(100 * ord$values$Relative_eig[1:2], 1), "%)")
+}
+
+plot_pcoa <- function(ps_obj, ord, title) {
+  plot_ordination(ps_obj, ord, color = "GroupSex") +
+    geom_point(size = 3) +
+    scale_color_manual(values = group_colors) +
+    labs(
+      title = title,
+      x = axis_labels(ord)[1],
+      y = axis_labels(ord)[2],
+      color = "Treatment × Sex"
+    ) +
+    theme_bw(base_size = 14)
+}
+
+pcoa_plot <- ggpubr::ggarrange(
+  plot_pcoa(ps_D0, ord_D0, "PCoA – D0"),
+  plot_pcoa(ps_D26, ord_D26, "PCoA – D26"),
+  ncol = 2, common.legend = T
+)
+pcoa_plot
+ggsave("../output/Figure4B.pdf", width = 12, height = 6)
+```
+
+### Figure 4C: Phlyum Barcharts
+```{r, fig.width = 10, fig.height = 5}
+c25 <- c(
+  "dodgerblue2","#E31A1C","green4","#6A3D9A","#FF7F00",
+  "black","gold1","skyblue2","#FB9A99","palegreen2",
+  "#CAB2D6","#FDBF6F","gray70","khaki2","maroon",
+  "orchid1","deeppink1","blue1","steelblue4","darkturquoise",
+  "green1","yellow4","yellow3","darkorange4","brown"
+)
+
+phylum_data <- abundance_long %>%
+  dplyr::rename("bacteria" = "taxon") %>%
+  filter(str_detect(bacteria, "p__") & !str_detect(bacteria, "c__")) %>%
+  left_join(metadata %>% mutate(sample_id = gsub("_", "-", sample_id)), by = "sample_id") %>%
+  group_by(group, sex, adriana_timepoint, bacteria) %>%
+  summarise(mean_abundance = mean(abundance), .groups = "drop") %>%
+  mutate(
+    bacteria = gsub(".*p__", "", bacteria),
+    TGS = paste(group, sex)
+  )
+
+top_phyla <- phylum_data %>%
+  group_by(bacteria) %>%
+  summarise(total = sum(mean_abundance), .groups = "drop") %>%
+  slice_max(total, n = 10) %>%
+  pull(bacteria)
+
+phylum_plot <- phylum_data %>%
+  filter(bacteria %in% top_phyla) %>%
+  mutate(adriana_timepoint = factor(adriana_timepoint, c("pre-EAE (D0)", "Day 26 (D26)"))) %>%
+  ggplot(aes(TGS, mean_abundance, fill = bacteria)) +
+  geom_bar(stat = "identity") +
+  facet_grid(~adriana_timepoint) +
+  theme_classic() +
+  ylab("Mean Relative Abundance (%)") +
+  xlab("Treatment × Sex") +
+  scale_fill_manual(values = c25)
+phylum_plot
+ggsave("../output/Figure4C.pdf", width = 10, height = 5)
+
+```
+
+### Figure 4D: Genus Barcharts
+```{r, fig.width = 10, fig.height = 5}
+genus_tmp <- abundance_long %>%
+  dplyr::rename("bacteria" = "taxon") %>%
+  filter(str_detect(bacteria, "g__") & !str_detect(bacteria, "s__")) %>%
+  left_join(metadata %>% mutate(sample_id = gsub("_", "-", sample_id)), by = "sample_id") %>%
+  group_by(group, sex, adriana_timepoint, bacteria) %>%
+  summarise(mean = mean(abundance), .groups = "drop") %>%
+  mutate(
+    bacteria = gsub(".*g__", "", bacteria),
+    TGS = paste(group, sex)
+  )
+
+top_genera <- genus_tmp %>%
+  group_by(bacteria) %>%
+  summarise(total = sum(mean), .groups = "drop") %>%
+  slice_max(total, n = 10) %>%
+  pull(bacteria)
+
+plot_data <- genus_tmp %>%
+  filter(bacteria %in% top_genera) %>%
+  group_by(TGS, adriana_timepoint) %>%
+  mutate(mean_norm = mean / sum(mean) * 100) %>%
+  ungroup() %>%
+   mutate(adriana_timepoint = factor(adriana_timepoint, c("pre-EAE (D0)", "Day 26 (D26)")))
+
+genus_plot <- ggplot(plot_data, aes(TGS, mean_norm, fill = bacteria)) +
+  geom_bar(stat = "identity") +
+  facet_grid(~adriana_timepoint) +
+  theme_classic() +
+  ylab("Relative Abundance (%)") +
+  xlab("Treatment × Sex") +
+  scale_fill_manual(values = c25)
+genus_plot
+ggsave("../output/Figure4D.pdf", width = 10, height = 5)
+```
+
+### Figure 4E: FB Ratio
+```{r, fig.width = 5, fig.height = 4}
+group_colors <- c(
+  "Ctl Female"  = "#9BB9E1",
+  "Ctl Male"    = "#415CAA",
+  "EtOH Female" = "#F6B284",
+  "EtOH Male"   = "#F26522"
+)
+
+phylum_data <- abundance_long %>%
+  mutate(taxon = gsub("k__Bacteria\\|", "", taxon)) %>%
+  filter(str_detect(taxon, "^p__")) %>%
+  mutate(phylum = str_extract(taxon, "(?<=p__)[^|]+")) %>%
+  filter(!grepl("\\|c__", taxon)) %>%
+  left_join(metadata %>% mutate(sample_id = gsub("_", "-", sample_id)), by = "sample_id")
+
+ratio_data <- phylum_data %>%
+  filter(phylum %in% c("Firmicutes", "Bacteroidota", "Verrucomicrobia")) %>%
+  select(sample_id, GroupSex, timepoint, phylum, abundance) %>%
+  pivot_wider(names_from = phylum, values_from = abundance, values_fill = 0) %>%
+  mutate(
+    FB_ratio = ifelse(Bacteroidota > 0, Firmicutes / Bacteroidota, NA),
+    VF_ratio = ifelse(Firmicutes > 0, Verrucomicrobia / Firmicutes, NA)
+  ) %>%
+  pivot_longer(cols = c(FB_ratio, VF_ratio), names_to = "ratio", values_to = "value")
+
+fb_stats <- ratio_data %>%
+   mutate(GroupSex = factor(GroupSex, levels = c("Ctl Female", "Ctl Male",
+                                                           "EtOH Female", "EtOH Male"))) %>%
+  filter(ratio == "FB_ratio") %>%
+  group_by(timepoint) %>%
+  pairwise_wilcox_test(value ~ GroupSex, p.adjust.method = "BH") %>%
+  add_significance("p.adj") %>%
+  filter(p.adj < 0.05) %>%
+  add_xy_position(step.increase = 0.01)
+
+
+gg4E <- ratio_data %>%
+             mutate(GroupSex = factor(GroupSex, levels = c("Ctl Female", "Ctl Male",
+                                                           "EtOH Female", "EtOH Male"))) %>%
+             filter(ratio == "FB_ratio") %>%
+    ggplot(aes(x = GroupSex, y = value, color = GroupSex)) +
+    geom_boxplot(width = 0.6, outlier.shape = NA) +
+    geom_jitter(width = 0.3, size = 1.5, alpha = 0.7) +
+    scale_color_manual(values = group_colors) +
+    stat_pvalue_manual(
+      fb_stats,
+      label = "p.adj.signif"
+    ) +
+    facet_wrap(~ timepoint, scales = "free_y") +
+    theme_classic(base_size = 14) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none"
+    ) +
+    labs(x = "Treatment × Sex", y = "FB Ratio")
+gg4E
+
+ggsave("../output/Figure4E.pdf", width = 5, height = 4)
+```
+
+### Figure 4F: VF Ratio
+```{r, fig.width = 5, fig.height = 4}
+group_colors <- c(
+  "Ctl Female"  = "#9BB9E1",
+  "Ctl Male"    = "#415CAA",
+  "EtOH Female" = "#F6B284",
+  "EtOH Male"   = "#F26522"
+)
+
+phylum_data <- abundance_long %>%
+  mutate(taxon = gsub("k__Bacteria\\|", "", taxon)) %>%
+  filter(str_detect(taxon, "^p__")) %>%
+  mutate(phylum = str_extract(taxon, "(?<=p__)[^|]+")) %>%
+  filter(!grepl("\\|c__", taxon)) %>%
+  left_join(metadata %>% mutate(sample_id = gsub("_", "-", sample_id)), by = "sample_id")
+
+ratio_data <- phylum_data %>%
+  filter(phylum %in% c("Firmicutes", "Bacteroidota", "Verrucomicrobia")) %>%
+  select(sample_id, GroupSex, timepoint, phylum, abundance) %>%
+  pivot_wider(names_from = phylum, values_from = abundance, values_fill = 0) %>%
+  mutate(
+    FB_ratio = ifelse(Bacteroidota > 0, Firmicutes / Bacteroidota, NA),
+    VF_ratio = ifelse(Firmicutes > 0, Verrucomicrobia / Firmicutes, NA)
+  ) %>%
+  pivot_longer(cols = c(FB_ratio, VF_ratio), names_to = "ratio", values_to = "value")
+
+vf_stats <- ratio_data %>%
+   mutate(GroupSex = factor(GroupSex, levels = c("Ctl Female", "Ctl Male",
+                                                           "EtOH Female", "EtOH Male"))) %>%
+  filter(ratio == "VF_ratio") %>%
+  group_by(timepoint) %>%
+  pairwise_wilcox_test(value ~ GroupSex, p.adjust.method = "BH") %>%
+  add_significance("p.adj") %>%
+  filter(p.adj < 0.05) %>%
+  add_xy_position(step.increase = 0.1)
+
+gg4F <- ratio_data %>%
+             mutate(GroupSex = factor(GroupSex, levels = c("Ctl Female", "Ctl Male",
+                                                           "EtOH Female", "EtOH Male"))) %>%
+             filter(ratio == "VF_ratio") %>%
+    ggplot(aes(x = GroupSex, y = value, color = GroupSex)) +
+    geom_boxplot(width = 0.6, outlier.shape = NA) +
+    geom_jitter(width = 0.3, size = 1.5, alpha = 0.7) +
+    scale_color_manual(values = group_colors) +
+    stat_pvalue_manual(
+      vf_stats,
+      label = "p.adj.signif"
+    ) +
+    facet_wrap(~ timepoint, scales = "free_y") +
+    theme_classic(base_size = 14) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none"
+    ) +
+    labs(x = "Treatment × Sex", y = "VF Ratio")
+gg4F
+ggsave("../output/Figure4F.pdf", width = 5, height = 4)
+```
+
+## Figure 5: Genus and Phylum Changes 
+### Figure 5A-D: Phylum Changes
+```{r, fig.width = 5, fig.height = 7}
+out_df <- data.frame()
+colors <- c(
+  "Ctl Female"  = "#9BB9E1",
+  "Ctl Male"    = "#415CAA",
+  "EtOH Female" = "#F6B284",
+  "EtOH Male"   = "#F26522"
+)
+active_level = "phylum"
+taxa_level <- abundance_long %>%
+  complete(taxon, sample_id) %>%
+  mutate(abundance = ifelse(is.na(abundance), 0, abundance)) %>%
+  dplyr::rename("bacteria" = "taxon",
+                "relative_abundance" = "abundance") %>%
+  filter(grepl("p__", bacteria)) %>%
+  filter(!grepl("c__", bacteria)) %>%
+  left_join(metadata %>% mutate(sample_id = gsub("_", "-", sample_id))) %>%
+  dplyr::mutate(mean = (relative_abundance)) %>%
+  mutate(bacteria = gsub(".*p__", "", bacteria)) %>%
+  mutate(TGS = paste0(group, " ", sex)) %>%
+  mutate(adriana_timepoint = factor(adriana_timepoint, c("pre-EAE (D0)",
+                                                         "Day 26 (D26)")))
+
+check <- taxa_level %>%
+  left_join(metadata %>% mutate(sample_id = gsub("_", "-", sample_id))) %>%
+  as.data.frame() %>%
+  compare_means(data = ., mean ~ TGS, group.by = c("bacteria", "timepoint")) %>%
+  select(-p.adj) %>%
+  filter(timepoint == "D26") %>%
+  group_by(bacteria) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj") %>%
+  mutate(taxa_level = "phylum")
+write.csv(check, "../output/phylum_statistical_results_D26.csv")
+
+## In the manuscript we focus on the phyla: Bacteroidota, Verrucomicrobia, Actinobacteria, and Firmicutes
+## in the main figure. This is due to their large contribution and known
+## physiological roles.
+check <- check %>%
+  filter(bacteria %in% c("Verrucomicrobia", "Bacteroidota",
+                         "Actinobacteria", "Firmicutes"))
+
+plot.list <- list()
+for(active_taxa in unique(check$bacteria[check$p.adj <= 0.05])){
+  tmp.data <- taxa_level %>%
+    left_join(metadata) %>%
+    filter(bacteria == active_taxa) %>%
+    filter(grepl("D26", timepoint))
+  
+  max_value <- max(tmp.data$mean)
+ tmpgg <- tmp.data %>%
+         ggplot(aes(x=TGS, y=mean)) +
+         geom_boxplot(outlier.shape = NA, aes(color = TGS)) +
+         geom_quasirandom(aes(color = TGS)) +
+         ggtitle(active_taxa) +
+         ylab("Relative Abundance (%)") + 
+         stat_pvalue_manual(check %>%
+                              filter(bacteria == active_taxa) %>%
+                              filter(p.adj <= 0.05) %>%
+                              mutate(y.position =rep_len(max_value * c(1.07, 1.14, 1.21, 1.28, 1.35, 1.42),
+                                                         length.out = nrow(.))), label = "p.adj.signif") +
+         scale_color_manual(values = colors) +
+        theme_bw() +
+         theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+                     axis.text = element_text(color = "black"),
+                     legend.position = "none",
+                     axis.title.x = element_blank()) 
+ 
+ plot.list <- c(plot.list, list(tmpgg))
+}
+
+ggarrange(plot.list[[4]], plot.list[[2]], plot.list[[1]], plot.list[[3]], 
+          nrow = 2, ncol = 2, common.legend = T)
+ggsave("../output/Figure5A_D.pdf", width = 5, height = 7)
+```
+
+### Figure 5E-J: Genius Changes
+```{r, fig.width = 7.5, fig.height = 7}
+colors <- c(
+  "Ctl Female"  = "#9BB9E1",
+  "Ctl Male"    = "#415CAA",
+  "EtOH Female" = "#F6B284",
+  "EtOH Male"   = "#F26522"
+)
+active_level = "genius"
+taxa_level <- abundance_long %>%
+  complete(taxon, sample_id) %>%
+  mutate(abundance = ifelse(is.na(abundance), 0, abundance)) %>%
+  dplyr::rename("bacteria" = "taxon",
+                "relative_abundance" = "abundance") %>%
+  filter(grepl("g__", bacteria)) %>%
+  filter(!grepl("s__", bacteria)) %>%
+  left_join(metadata %>% mutate(sample_id = gsub("_", "-", sample_id))) %>%
+  dplyr::mutate(mean = (relative_abundance)) %>%
+  mutate(bacteria = gsub(".*g__", "", bacteria)) %>%
+  mutate(TGS = paste0(group, " ", sex)) %>%
+  mutate(adriana_timepoint = factor(adriana_timepoint, c("pre-EAE (D0)",
+                                                         "Day 26 (D26)")))
+
+check <- taxa_level %>%
+  left_join(metadata %>% mutate(sample_id = gsub("_", "-", sample_id))) %>%
+  as.data.frame() %>%
+  compare_means(data = ., mean ~ TGS, group.by = c("bacteria", "timepoint")) %>%
+  select(-p.adj) %>%
+  filter(timepoint == "D26") %>%
+  group_by(bacteria) %>%
+  adjust_pvalue(method = "fdr") %>%
+  add_significance("p.adj") %>%
+  mutate(taxa_level = "genius")
+write.csv(check, "../output/genius_statistical_results_D26.csv")
+
+## In the manuscript we focus on the genera: Akkermansia, Bacteroides, Alistipes,
+## GGB14001, GGB24132, GGB29685
+check <- check %>%
+  filter(bacteria %in% c("Akkermansia", "Bacteroides",
+                         "Alistipes", "GGB14001",
+                         "GGB24132", "GGB29685"))
+
+plot.list <- list()
+for(active_taxa in unique(check$bacteria[check$p.adj <= 0.05])){
+  tmp.data <- taxa_level %>%
+    left_join(metadata) %>%
+    filter(bacteria == active_taxa) %>%
+    filter(grepl("D26", timepoint))
+  
+  max_value <- max(tmp.data$mean)
+ tmpgg <- tmp.data %>%
+         ggplot(aes(x=TGS, y=mean)) +
+         geom_boxplot(outlier.shape = NA, aes(color = TGS)) +
+         geom_quasirandom(aes(color = TGS)) +
+         ggtitle(active_taxa) +
+         ylab("Relative Abundance (%)") + 
+         stat_pvalue_manual(check %>%
+                              filter(bacteria == active_taxa) %>%
+                              filter(p.adj <= 0.05) %>%
+                              mutate(y.position =rep_len(max_value * c(1.07, 1.14, 1.21, 1.28, 1.35, 1.42),
+                                                         length.out = nrow(.))), label = "p.adj.signif") +
+         scale_color_manual(values = colors) +
+        theme_bw() +
+         theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+                     axis.text = element_text(color = "black"),
+                     legend.position = "none",
+                     axis.title.x = element_blank()) 
+ 
+ plot.list <- c(plot.list, list(tmpgg))
+}
+
+ggarrange(plot.list[[1]], plot.list[[3]], plot.list[[2]],
+          plot.list[[4]], plot.list[[5]], plot.list[[6]], 
+          nrow = 2, ncol = 3, common.legend = T)
+ggsave("../output/Figure5E_J.pdf", width = 7.5, height = 7)
+```
+
+## Figure 6: Flow Cytometry
+
+```{r}
+color_pal <- c("#415CAA", "#F26522")
+## Load the Flow Data, gating scheme for which is provided in Supplementary Figure 2
+data <- read_xlsx("../data/Flow_data.xlsx") %>%
+  dplyr::rename("mouse_id" = "...1")
+colnames(data) <- gsub(" \\|.*", "", gsub(".*CD3\\+\\/", "",gsub(".*Live\\/", "",  colnames(data))))
+colnames(data)[15] <- paste0(colnames(data)[15], " of CD69+ PD1+")
+
+global_stats <- data %>%
+  pivot_longer(cols = c(-mouse_id, -Group)) %>%
+  group_by(name) %>%
+  as.data.frame() %>%
+  compare_means(data = ., value~Group, group.by = "name", method = "wilcox.test")
+
+write.csv(global_stats, paste0(output, "Figure6_statistical_results.csv"))
+```
+
+### Figure 6A: B and T Cells
+```{r, fig.width = 2.75, fig.height = 2.5}
+gga <- data %>%
+  pivot_longer(c(-`mouse_id`, -Group)) %>%
+  filter(name %in% c("CD3+", "CD19+")) %>%
+  ggplot(aes(x=Group, y= value, color = Group)) +
+  geom_boxplot(outlier.shape = NA, width = 0.6) +
+  ggbeeswarm::geom_quasirandom() +
+  theme_classic() +
+  facet_grid(~name) +
+  ylab("Percent of\nLive Lymphocytes (%)") +
+  stat_compare_means(comparisons = list(c("EtOH", "Ctl")),
+                     method = "wilcox.test") +
+  scale_color_manual(values = color_pal) +
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black"),
+        strip.background = element_blank(),
+        legend.position = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+gga + ylab("Percent of Live Lymphocytes (%)")
+ggsave(filename = "Figure6A.pdf", path = "../output", width = 2.75, height = 2.5)
+```
+
+### Figure 6B: CD4+ and CD8+ T Cells
+```{r, fig.width = 2.75, fig.height = 2.5}
+ggb <- data %>%
+  pivot_longer(c(-`mouse_id`, -Group)) %>%
+  filter(name %in% c("CD4+", "CD8+")) %>%
+  ggplot(aes(x=Group, y= value, color = Group)) +
+  geom_boxplot(outlier.shape = NA, width = 0.6) +
+  ggbeeswarm::geom_quasirandom() +
+  theme_classic() +
+  facet_grid(~name)  +
+  ylab("Percent of T Cells (%)") +
+  stat_compare_means(comparisons = list(c("EtOH", "Ctl")),
+                     method = "wilcox.test") +
+  scale_color_manual(values = color_pal)+
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black"),
+        strip.background = element_blank(),
+        legend.position = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)))
+ggb
+ggsave(filename = "Figure6B.pdf", path = "../output", width = 2.75, height = 2.5)
+```
+
+### Figure 6C: CD4+ Activation States
+```{r, fig.width = 4.125, fig.height = 2.5}
+ggc <- data %>%
+  pivot_longer(c(-`mouse_id`, -Group)) %>%
+  filter(name %in% c("CD4+/CD69+", "CD4+/OX40+",
+                     "CD4+/PD-1+")) %>%
+  ggplot(aes(x=Group, y= value, color = Group)) +
+  geom_boxplot(outlier.shape = NA, width = 0.6) +
+  ggbeeswarm::geom_quasirandom() +
+  theme_classic() +
+  facet_grid(~name) +
+  ylab("Percent of CD4+ T cells (%)")  +
+  stat_compare_means(comparisons = list(c("EtOH", "Ctl")),
+                     method = "wilcox.test") +
+  scale_color_manual(values = color_pal) +
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black"),
+        strip.background = element_blank(),
+        legend.position = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) 
+ggc
+ggsave(filename = "Figure6C_part1.pdf", path = "../output", width = 4.125, height = 2.5)
+```
+
+
+
+
+```{r, fig.width = 5.5, fig.height = 2.5}
+ggc2 <- data %>%
+  pivot_longer(c(-`mouse_id`, -Group)) %>%
+  filter(name %in% c("CD4+/Q1: CD69+ PD1-", "CD4+/Q2: CD69+ PD1+",
+                     "CD4+/Q3: CD69- PD1+", "CD4+/Q4: CD69- PD1-")) %>%
+  mutate(name = gsub(".*: ", "", name)) %>%
+  mutate(name = factor(name, c("CD69- PD1-", "CD69+ PD1-",
+                               "CD69+ PD1+", "CD69- PD1+"))) %>%
+  ggplot(aes(x=Group, y= value, color = Group)) +
+  geom_boxplot(outlier.shape = NA) +
+  ggbeeswarm::geom_quasirandom() +
+  theme_classic() +
+  facet_wrap(~name, scales = "free", nrow = 1) +
+  ylab("Percent of CD4+ T cells (%)")  +
+  stat_compare_means(comparisons = list(c("EtOH", "Ctl")),
+                     method = "wilcox.test") +
+  scale_color_manual(values = color_pal)+
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black"),
+        strip.background = element_blank(),
+        legend.position = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) 
+ggc2
+ggsave(filename = "Figure6C_part2.pdf", path = "../output", width = 5.5, height = 2.5)
+```
+
+### Figure 6D: CD8+ Activation States
+```{r, fig.width = 2.75, fig.height = 2.5}
+ggd <- data %>%
+  pivot_longer(c(-`mouse_id`, -Group)) %>%
+  filter(name %in% c("CD8+/CD69+", 
+                     "CD8+/PD-1+")) %>%
+  ggplot(aes(x=Group, y= value, color = Group)) +
+  geom_boxplot(outlier.shape = NA, width = 0.6) +
+  ggbeeswarm::geom_quasirandom() +
+  theme_classic() +
+  facet_grid(~name) +
+  ylab("Percent of CD8+ T cells (%)")  +
+  stat_compare_means(comparisons = list(c("EtOH", "Ctl")),
+                     method = "wilcox.test") +
+  scale_color_manual(values = color_pal) +
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black"),
+        strip.background = element_blank(),
+        legend.position = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) 
+ggd
+ggsave(filename = "Figure6D_part1.pdf", path = "../output", width = 2.75, height = 2.5)
+```
+
+```{r, fig.width = 5.5, fig.height = 2.5}
+
+ggd2 <- data %>%
+  pivot_longer(c(-`mouse_id`, -Group)) %>%
+  filter(name %in% c("CD8+/Q1: CD69+ PD1-", "CD8+/Q2: CD69+ PD1+",
+                     "CD8+/Q3: CD69- PD1+", "CD8+/Q4: CD69- PD1-")) %>%
+  mutate(name = gsub(".*: ", "", name)) %>%
+  mutate(name = factor(name, c("CD69- PD1-", "CD69+ PD1-",
+                               "CD69+ PD1+", "CD69- PD1+"))) %>%
+  ggplot(aes(x=Group, y= value, color = Group)) +
+  geom_boxplot(outlier.shape = NA) +
+  ggbeeswarm::geom_quasirandom() +
+  theme_classic() +
+  facet_wrap(~name, scales = "free", nrow = 1) +
+  ylab("Percent of CD8+ T cells (%)")  +
+  stat_compare_means(comparisons = list(c("EtOH", "Ctl")),
+                     method = "t.test") +
+  scale_color_manual(values = color_pal)+
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black"),
+        strip.background = element_blank(),
+        legend.position = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) 
+ggd2
+ggsave(filename = "Figure6D_part2.pdf", path = "../output", width = 5.5, height = 2.5)
+
+
+```
+
+### Figure 6E: DN Activation State
+```{r, fig.width = 5.5, fig.height = 2.5}
+
+gge <- data %>%
+  pivot_longer(c(-`mouse_id`, -Group)) %>%
+  filter(name %in% c("DN/Q1: CD69+ PD1-", "DN/Q2: CD69+ PD1+",
+                     "DN/Q3: CD69- PD1+", "DN/Q4: CD69- PD1-")) %>%
+  mutate(name = gsub(".*: ", "", name)) %>%
+  mutate(name = factor(name, c("CD69- PD1-", "CD69+ PD1-",
+                               "CD69+ PD1+", "CD69- PD1+"))) %>%
+  ggplot(aes(x=Group, y= value, color = Group)) +
+  geom_boxplot(outlier.shape = NA) +
+  ggbeeswarm::geom_quasirandom() +
+  theme_classic() +
+  facet_wrap(~name, scales = "free", nrow = 1) +
+  ylab("Percent of DN T cells (%)")  +
+  stat_compare_means(comparisons = list(c("EtOH", "Ctl")),
+                     method = "t.test") +
+  scale_color_manual(values = color_pal)+
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black"),
+        strip.background = element_blank(),
+        legend.position = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) 
+gge
+ggsave(filename = "Figure6E.pdf", path = "../output", width = 5.5, height = 2.5)
+```
+
+
+## Supplementary Figure 1
+### Supplementary Figure 1A
+```{r}
+group_colors <- c(
+  "Ctl-Female"  = "#9BB9E1",
+  "Ctl-Male"    = "#415CAA",
+  
+  "EtOH-Female" = "#F6B284",
+  "EtOH-Male"   = "#F26522",
+  
+  "Ctl"         = "#7A7A7A",  
+  "EtOH"        = "#000000"
+)
+
+
+eae_data <- read_csv("../data/Extended_EAE_data.csv")
+
+eae_data <- eae_data %>%
+  mutate(pattern = paste(Treatment, Sex, sep = "-"))
+
+comparison.plot("EtOH", "Ctl", "FigureS1_part1")
+comparison.plot("EtOH-Male", "Ctl-Male", "FigureS1_part2")
+comparison.plot("EtOH-Female", "Ctl-Female", "FigureS1_part3")
+comparison.plot("Ctl-Male", "Ctl-Female", "FigureS1_part4")
+comparison.plot("EtOH-Male", "EtOH-Female", "FigureS1_part5")
+```
+
+### Supplementary Figure 1B
+```{r, fig.width = 6.5, fig.height = 4.5}
+weights <- read_csv("../data/Mice_weights.csv")
+
+weights_long <- weights %>%
+  pivot_longer(cols = c(-Mouse_ID, -Treatment, -Sex), names_to = "Day", values_to = "Weight") %>%
+  mutate(
+    Day = as.numeric(Day),
+    Group = factor(
+      paste(Treatment, Sex, sep = "-"),
+      levels = c("Ctl-Male", "EtOH-Male", "Ctl-Female", "EtOH-Female")
+    )
+  )
+
+weight_summary <- weights_long %>%
+  group_by(Group, Day) %>%
+  summarise(
+    mean_weight = mean(Weight, na.rm = TRUE),
+    sem = standard_error(Weight),
+    .groups = "drop"
+  )
+
+p_weight <- ggplot(weight_summary,
+                   aes(Day, mean_weight, color = Group, group = Group)) +
+  annotate("rect", xmin = 11, xmax = 17, ymin = -Inf, ymax = Inf,
+           alpha = 0.1, fill = "grey") +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_weight - sem,
+                    ymax = mean_weight + sem),
+                width = 0.3) +
+  scale_color_manual(values = c(
+    "Ctl-Male"="#415CAA","Ctl-Female"="#9BB9E1",
+    "EtOH-Male"="#F26522","EtOH-Female"="#F6B284")) +
+  labs(x = "Days post-induction", y = "Body weight (g)")
+p_weight
+ggsave("../output/FigureS1B.pdf", width = 6.5, height = 4.5)
+```
+
+
+## Supplementary Figure 2
+```{r, fig.width = 5.5, fig.height = 2.5}
+## data is the loaded Flow data from Figure 6
+ggs1 <- data %>%
+  pivot_longer(c(-`mouse_id`, -Group)) %>%
+  filter(name %in% c("CD4+/Q1: CD69+ OX40-", "CD4+/Q2: CD69+ OX40+",
+                     "CD4+/Q3: CD69- OX40+", "CD4+/Q4: CD69- OX40-")) %>%
+  mutate(name = gsub(".*: ", "", name)) %>%
+  mutate(name = factor(name, c("CD69- OX40-", "CD69+ OX40-",
+                               "CD69+ OX40+", "CD69- OX40+"))) %>%
+  ggplot(aes(x=Group, y= value, color = Group)) +
+  geom_boxplot(outlier.shape = NA) +
+  ggbeeswarm::geom_quasirandom() +
+  theme_classic() +
+  facet_wrap(~name, scales = "free", nrow = 1) +
+  ylab("Percent of CD4+ T cells (%)")  +
+  stat_compare_means(comparisons = list(c("EtOH", "Ctl")),
+                     method = "wilcox.test") +
+  scale_color_manual(values = color_pal)+
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black"),
+        strip.background = element_blank(),
+        legend.position = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) 
+ggs1
+ggsave(filename = "FigureS2B_part1.pdf", path = "../output", width = 5.5, height = 2.5)
+
+ggs1_2 <- data %>%
+  pivot_longer(c(-`mouse_id`, -Group)) %>%
+  filter(name %in% c("CD4+/Q1: OX40+ PD1-", "CD4+/Q2: OX40+ PD1+",
+                     "CD4+/Q3: OX40- PD1+", "CD4+/Q4: OX40- PD1-")) %>%
+  mutate(name = gsub(".*: ", "", name)) %>%
+  mutate(name = factor(name, c("OX40- PD1-", "OX40+ PD1-",
+                               "OX40+ PD1+", "OX40- PD1+"))) %>%
+  ggplot(aes(x=Group, y= value, color = Group)) +
+  geom_boxplot(outlier.shape = NA) +
+  ggbeeswarm::geom_quasirandom() +
+  theme_classic() +
+  facet_wrap(~name, scales = "free", nrow = 1) +
+  ylab("Percent of CD4+ T cells (%)")  +
+  stat_compare_means(comparisons = list(c("EtOH", "Ctl")),
+                     method = "wilcox.test") +
+  scale_color_manual(values = color_pal)+
+  theme(axis.text = element_text(color = "black"),
+        axis.ticks = element_line(color = "black"),
+        strip.background = element_blank(),
+        legend.position = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) 
+ggs1_2
+ggsave(filename = "FigureS2B_part2.pdf", path = "../output", width = 5.5, height = 2.5)
+
+```
+
+## SessionInfo and Package Versions
+```{r}
+sessionInfo()
+```
+
+R version 4.5.0 (2025-04-11 ucrt)
+Platform: x86_64-w64-mingw32/x64
+Running under: Windows 11 x64 (build 26100)
+
+Matrix products: default
+  LAPACK version 3.12.1
+
+locale:
+[1] LC_COLLATE=English_United States.utf8 
+[2] LC_CTYPE=English_United States.utf8   
+[3] LC_MONETARY=English_United States.utf8
+[4] LC_NUMERIC=C                          
+[5] LC_TIME=English_United States.utf8    
+
+time zone: America/Chicago
+tzcode source: internal
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+ [1] patchwork_1.3.2  vegan_2.7-1      permute_0.9-7    phyloseq_1.52.0 
+ [5] rstatix_0.7.2    sciplot_1.2-0    Hmisc_5.2-5      writexl_1.5.4   
+ [9] ggbeeswarm_0.7.2 emmeans_1.11.1   readxl_1.4.5     ggpubr_0.6.0    
+[13] lubridate_1.9.4  forcats_1.0.0    stringr_1.5.1    dplyr_1.1.4     
+[17] purrr_1.0.4      readr_2.1.5      tidyr_1.3.1      tibble_3.2.1    
+[21] ggplot2_3.5.2    tidyverse_2.0.0 
+
+loaded via a namespace (and not attached):
+ [1] gridExtra_2.3           rlang_1.1.6             magrittr_2.0.3         
+ [4] ade4_1.7-23             compiler_4.5.0          mgcv_1.9-1             
+ [7] systemfonts_1.2.3       vctrs_0.6.5             reshape2_1.4.4         
+[10] pkgconfig_2.0.3         crayon_1.5.3            fastmap_1.2.0          
+[13] backports_1.5.0         XVector_0.48.0          labeling_0.4.3         
+[16] rmarkdown_2.29          tzdb_0.5.0              UCSC.utils_1.4.0       
+[19] ragg_1.4.0              bit_4.6.0               xfun_0.52              
+[22] GenomeInfoDb_1.44.3     jsonlite_2.0.0          biomformat_1.36.0      
+[25] rhdf5filters_1.20.0     Rhdf5lib_1.30.0         broom_1.0.8            
+[28] parallel_4.5.0          cluster_2.1.8.1         R6_2.6.1               
+[31] stringi_1.8.7           RColorBrewer_1.1-3      car_3.1-3              
+[34] rpart_4.1.24            cellranger_1.1.0        estimability_1.5.1     
+[37] Rcpp_1.0.14             iterators_1.0.14        knitr_1.50             
+[40] base64enc_0.1-3         IRanges_2.42.0          splines_4.5.0          
+[43] Matrix_1.7-3            nnet_7.3-20             igraph_2.1.4           
+[46] timechange_0.3.0        tidyselect_1.2.1        rstudioapi_0.17.1      
+[49] abind_1.4-8             yaml_2.3.10             codetools_0.2-20       
+[52] lattice_0.22-6          plyr_1.8.9              Biobase_2.68.0         
+[55] withr_3.0.2             evaluate_1.0.5          foreign_0.8-90         
+[58] survival_3.8-3          Biostrings_2.76.0       pillar_1.10.2          
+[61] carData_3.0-5           checkmate_2.3.3         foreach_1.5.2          
+[64] stats4_4.5.0            generics_0.1.4          vroom_1.6.5            
+[67] S4Vectors_0.46.0        hms_1.1.3               scales_1.4.0           
+[70] xtable_1.8-4            glue_1.8.0              tools_4.5.0            
+[73] data.table_1.17.2       ggsignif_0.6.4          mvtnorm_1.3-3          
+[76] cowplot_1.1.3           rhdf5_2.52.1            grid_4.5.0             
+[79] ape_5.8-1               colorspace_2.1-1        nlme_3.1-168           
+[82] GenomeInfoDbData_1.2.14 beeswarm_0.4.0          htmlTable_2.4.3        
+[85] vipor_0.4.7             Formula_1.2-5           cli_3.6.5              
+[88] textshaping_1.0.1       gtable_0.3.6            digest_0.6.37          
+[91] BiocGenerics_0.54.0     htmlwidgets_1.6.4       farver_2.1.2           
+[94] htmltools_0.5.8.1       multtest_2.64.0         lifecycle_1.0.4        
+[97] httr_1.4.7              bit64_4.6.0-1           MASS_7.3-65  
