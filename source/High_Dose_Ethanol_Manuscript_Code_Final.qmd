@@ -443,25 +443,28 @@ genus_tmp <- abundance_long %>%
   dplyr::rename("bacteria" = "taxon") %>%
   filter(str_detect(bacteria, "g__") & !str_detect(bacteria, "s__")) %>%
   left_join(metadata %>% mutate(sample_id = gsub("_", "-", sample_id)), by = "sample_id") %>%
-  group_by(group, sex, adriana_timepoint, bacteria) %>%
-  summarise(mean = mean(abundance), .groups = "drop") %>%
   mutate(
     bacteria = gsub(".*g__", "", bacteria),
     TGS = paste(group, sex)
   )
 
 top_genera <- genus_tmp %>%
+  complete(bacteria, sample_id) %>%
+  mutate(abundance2 = ifelse(is.na(abundance), 0, abundance)) %>%
   group_by(bacteria) %>%
-  summarise(total = sum(mean), .groups = "drop") %>%
+  summarise(total = mean(abundance), .groups = "drop") %>%
   slice_max(total, n = 10) %>%
   pull(bacteria)
 
 plot_data <- genus_tmp %>%
-  filter(bacteria %in% top_genera) %>%
-  group_by(TGS, adriana_timepoint) %>%
-  mutate(mean_norm = mean / sum(mean) * 100) %>%
+  mutate(bacteria = ifelse(bacteria %in% top_genera, bacteria, "Other")) %>%
+  group_by(sample_id, TGS, adriana_timepoint, bacteria) %>%
+  dplyr::summarize(abundance = sum(abundance)) %>%
+  group_by(TGS, adriana_timepoint, bacteria) %>%
+  dplyr::summarize(mean_norm = mean(abundance)) %>%
   ungroup() %>%
-   mutate(adriana_timepoint = factor(adriana_timepoint, c("pre-EAE (D0)", "Day 26 (D26)")))
+   mutate(adriana_timepoint = factor(adriana_timepoint, c("pre-EAE (D0)", "Day 26 (D26)"))) %>%
+  mutate(bacteria = factor(bacteria, levels = c(top_genera, "Other")))
 
 genus_plot <- ggplot(plot_data, aes(TGS, mean_norm, fill = bacteria)) +
   geom_bar(stat = "identity") +
@@ -469,7 +472,7 @@ genus_plot <- ggplot(plot_data, aes(TGS, mean_norm, fill = bacteria)) +
   theme_classic() +
   ylab("Relative Abundance (%)") +
   xlab("Treatment × Sex") +
-  scale_fill_manual(values = c25)
+  scale_fill_manual(values = c(c25[c(10, 9,8,7,6,5,4,3,2,1)], "darkgray"))
 genus_plot
 ggsave("../output/Figure4D.pdf", width = 10, height = 5)
 ```
